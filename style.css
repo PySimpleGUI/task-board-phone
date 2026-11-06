@@ -68,6 +68,10 @@ svg { display: block; flex: none; }
 .card { position: relative; display: flex; gap: 9px; align-items: flex-start; background: var(--card); border: 1px solid var(--card-line); border-radius: 9px; padding: 9px 10px; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: transform .12s; }
 .card:active { transform: scale(.985); }
 .card.done { background: var(--card-done); }
+.card.lifted { transform: scale(1.03); box-shadow: 0 8px 22px rgba(0,0,0,.45); z-index: 2; }
+.card.gap { opacity: .3; border-style: dashed; box-shadow: none; }
+.card.dragging { position: fixed; z-index: 50; margin: 0; pointer-events: none; transform: rotate(1.5deg) scale(1.03); transition: none; box-shadow: 0 14px 30px rgba(0,0,0,.55); }
+body.dragmode, body.dragmode * { cursor: grabbing; }
 .card.new { border: 2px solid var(--new); padding: 8px 9px; box-shadow: 0 0 12px -2px color-mix(in srgb, var(--new) 55%, transparent); }
 .card .box { width: 30px; height: 30px; margin: -5px -4px -5px -6px; display: grid; place-items: center; flex: none; position: relative; }
 .cbody { flex: 1; min-width: 0; }

@@ -399,6 +399,36 @@ export class Board {
     const sec = this.section(sid);
     return this.edit(cid, `Moved to ${sec ? sec.name : 'another section'}`, { section: sid, pos: this.nextPos(sid) });
   }
+  placeCard(cid, sid, index, F) {                               // = move_card in task_board.pyw: a dragged card dropped into section sid at
+    const it = this.ents[cid];                                  // `index` among the cards shown there (not counting it); open and checked-off
+    if (!it) return null;                                       // cards are shown in two groups, so it goes right after the shown card of its
+    const shown = this.shownItems(sid, F).filter(c => c.id !== cid);   // own kind above the drop (or right before the first one) in the real order
+    if (it.section === sid) {
+      const cur = this.shownItems(sid, F).map(c => c.id);
+      if (cur.includes(cid) && cur.indexOf(cid) === index) return null;
+    }
+    const same = shown.filter(c => !!c.done === !!it.done).map(c => c.id);
+    const j = shown.slice(0, index).filter(c => !!c.done === !!it.done).length;
+    const after = j > 0 ? same[j - 1] : null, before = j === 0 && same.length ? same[0] : null;
+    const sec = this.section(sid);
+    const b = this.batch(it.section === sid ? 'Moved card' : `Moved to ${sec ? sec.name : 'another section'}`);
+    const fields = { pos: this.posNear((this.items[sid] || []).filter(x => x.id !== cid), after, before, b) };
+    if (it.section !== sid) fields.section = sid;
+    return b.put(cid, fields).done();
+  }
+  posNear(items, after, before, b) {                            // = pos_near: a pos right after `after` (or right before `before`; neither = the end).
+    if (!items.length) return 1.0;                              // If the gap has become too small the cards are numbered 1, 2, 3 ... first (in b)
+    const ids = items.map(e => e.id), pos = n => parseFloat(items[n].pos) || 0;
+    let lo, hi, slot;
+    if (after && ids.includes(after)) { const i = ids.indexOf(after); lo = pos(i); hi = i + 1 < items.length ? pos(i + 1) : pos(i) + 2.0; slot = i + 1; }
+    else if (before && ids.includes(before)) { const i = ids.indexOf(before); lo = i > 0 ? pos(i - 1) : pos(i) - 2.0; hi = pos(i); slot = i; }
+    else return pos(items.length - 1) + 1.0;
+    if (hi - lo < 1e-6) {
+      items.forEach((e, n) => b.put(e.id, { pos: n + 1 }));
+      lo = slot; hi = slot < items.length ? slot + 1 : slot + 2.0;
+    }
+    return (lo + hi) / 2;
+  }
   saveNotes(cid, mine, base) {                                  // both versions kept if the other person changed them meanwhile
     const it = this.ents[cid];
     if (!it) return null;

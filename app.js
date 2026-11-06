@@ -274,7 +274,7 @@ function sectionHTML(s) {
       body += `<button class="sfoot" data-act="add" data-ref="${esc(s.id)}">${ic('plus', P.faint, 15)}Add a card</button>`;
     } else body += '<div style="height:8px"></div>';
   }
-  return `<div class="sec" style="--sline:${line};--sfill:${fill}" data-sid="${esc(s.id)}">
+  return `<div class="sec" style="--sline:${line};--sfill:${fill}" data-sid="${esc(s.id)}"${s.virtual ? ' data-virtual="1"' : ''}>
     <button class="shead" data-act="fold" data-ref="${esc(s.id)}">${ic(folded ? 'chev_r' : 'chev_d', color, 15)}
       <span class="sname" style="color:${AT(color)}">${esc((s.name || 'Section').toUpperCase())}</span><span class="scounts">${counts}</span></button>
     ${body}</div>`;
@@ -787,16 +787,90 @@ document.addEventListener('click', e => {
   }
 });
 
-// long-press a card: its menu
-let lp = null;
+// hold a card: it lifts.  Let go without moving = its menu.  Move while holding = drag it to a new place, in its section or another one
+let lp = null, DRAG = null;
 document.addEventListener('pointerdown', e => {
   UI.longPressed = false;                                       // a new touch: the long-press before it is over
   const card = e.target.closest('.card');
-  if (!card || e.button > 0) return;
-  lp = { x: e.clientX, y: e.clientY, cid: card.dataset.cid, timer: setTimeout(() => { UI.longPressed = true; lp = null; if (navigator.vibrate) navigator.vibrate(20); cardMenu(card.dataset.cid); }, 480) };
+  if (!card || e.button > 0 || DRAG) return;
+  lp = { x: e.clientX, y: e.clientY, card, armed: false, timer: setTimeout(() => {
+    if (!lp) return;
+    lp.armed = true; UI.longPressed = true;                     // the tap that ends this hold is not a tap
+    card.classList.add('lifted');
+    if (navigator.vibrate) navigator.vibrate(20);
+  }, 420) };
 });
-document.addEventListener('pointermove', e => { if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { clearTimeout(lp.timer); lp = null; } });
-['pointerup', 'pointercancel'].forEach(n => document.addEventListener(n, () => { if (lp) { clearTimeout(lp.timer); lp = null; } }));
+document.addEventListener('pointermove', e => {
+  if (DRAG) { dragMove(e.clientX, e.clientY); return; }
+  if (!lp) return;
+  const d = Math.hypot(e.clientX - lp.x, e.clientY - lp.y);
+  if (!lp.armed) { if (d > 10) { clearTimeout(lp.timer); lp = null; } return; }       // moved before the hold: it's a scroll
+  if (d > 8 && lp.card.closest('#board') && !lp.card.closest('[data-virtual]')) startDrag(e.clientX, e.clientY);
+});
+document.addEventListener('pointerup', () => {
+  if (DRAG) { endDrag(true); return; }
+  if (!lp) return;
+  clearTimeout(lp.timer);
+  const p = lp; lp = null;
+  if (p.armed) { p.card.classList.remove('lifted'); cardMenu(p.card.dataset.cid); }
+});
+document.addEventListener('pointercancel', () => {
+  if (DRAG) { endDrag(false); return; }
+  if (lp) { clearTimeout(lp.timer); lp.card.classList.remove('lifted'); lp = null; }
+});
+document.addEventListener('touchmove', e => { if (DRAG || (lp && lp.armed)) e.preventDefault(); }, { passive: false });   // no scrolling while a card is held
+
+function startDrag(x, y) {
+  const card = lp.card, r = card.getBoundingClientRect();
+  const ghost = card.cloneNode(true);                           // the card under the finger; the real one stays in the list as the gap
+  ghost.classList.remove('lifted');
+  ghost.classList.add('dragging');
+  Object.assign(ghost.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px' });
+  document.body.appendChild(ghost);
+  card.classList.remove('lifted');
+  card.classList.add('gap');
+  DRAG = { cid: card.dataset.cid, card, ghost, dx: x - r.left, dy: y - r.top, x, y, raf: 0 };
+  lp = null;
+  document.body.classList.add('dragmode');
+  dragMove(x, y);
+  DRAG.raf = requestAnimationFrame(dragScroll);
+}
+function dragMove(x, y) {
+  DRAG.x = x; DRAG.y = y;
+  DRAG.ghost.style.left = (x - DRAG.dx) + 'px';
+  DRAG.ghost.style.top = (y - DRAG.dy) + 'px';
+  const el = document.elementFromPoint(Math.min(Math.max(x, 2), innerWidth - 2), y);
+  const sec = el && el.closest('#board .sec');
+  const body = sec && !sec.dataset.virtual && sec.querySelector('.sbody');   // a folded section has no body: no drop there
+  if (!body) return;
+  const cards = [...body.querySelectorAll('.card')].filter(c => c !== DRAG.card);
+  const next = cards.find(c => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; });
+  if (next) { if (DRAG.card.nextElementSibling !== next) body.insertBefore(DRAG.card, next); }
+  else if (body.lastElementChild !== DRAG.card) body.appendChild(DRAG.card);
+  document.querySelectorAll('#board .sempty').forEach(n => { n.hidden = !!n.parentNode.querySelector('.card'); });
+}
+function dragScroll() {                                         // near the top or bottom edge: the board scrolls
+  if (!DRAG) return;
+  const top = $('#hdr').getBoundingClientRect().bottom + 60, bottom = innerHeight - 70;
+  const v = DRAG.y < top ? -Math.min(18, (top - DRAG.y) / 3 + 4) : DRAG.y > bottom ? Math.min(18, (DRAG.y - bottom) / 3 + 4) : 0;
+  if (v) { window.scrollBy(0, v); dragMove(DRAG.x, DRAG.y); }
+  DRAG.raf = requestAnimationFrame(dragScroll);
+}
+function endDrag(drop) {
+  const d = DRAG;
+  DRAG = null;
+  cancelAnimationFrame(d.raf);
+  d.ghost.remove();
+  document.body.classList.remove('dragmode');
+  UI.dragEnded = Date.now();
+  const body = d.card.parentNode, sec = body && body.closest('.sec');
+  if (drop && sec) {
+    const index = [...body.querySelectorAll('.card')].indexOf(d.card);
+    const b = B.placeCard(d.cid, sec.dataset.sid, index, F);     // redraws the board itself
+    if (b) { toast(b.label === 'Moved card' ? 'Moved' : b.label, b); return; }
+  }
+  renderBoard();
+}
 document.addEventListener('contextmenu', e => { if (e.target.closest('.card')) e.preventDefault(); });
 
 // swipe left / right on the board: the next / previous page
@@ -804,6 +878,7 @@ let sw = null;
 $('#board').addEventListener('touchstart', e => { if (e.touches.length === 1) sw = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }; }, { passive: true });
 $('#board').addEventListener('touchend', e => {
   if (!sw || !B) return;
+  if (DRAG || Date.now() - (UI.dragEnded || 0) < 500) { sw = null; return; }   // the end of a drag is not a swipe
   const dx = e.changedTouches[0].clientX - sw.x, dy = e.changedTouches[0].clientY - sw.y;
   const quick = Date.now() - sw.t < 600;
   sw = null;
