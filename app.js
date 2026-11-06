@@ -537,7 +537,7 @@ function grow(t) {                                              // a text box as
 // ---------- sheets ----------
 function sheet(kind, html) {
   UI.sheetKind = kind;
-  $('#sheet').innerHTML = '<div class="grab"></div>' + html;
+  $('#sheet').innerHTML = `<div class="grab"></div><button class="shclose" data-act="closesheet" aria-label="Close">${ic('x', P.dim, 20)}</button>` + html;
   if (!isOpen('sheet')) openLayer('sheet'); else showLayers();
   $('#sheet').scrollTop = 0;
 }
@@ -886,7 +886,26 @@ function endDrag(drop) {
   }
   renderAll();
 }
-document.addEventListener('contextmenu', e => { if (e.target.closest('.card')) e.preventDefault(); });
+document.addEventListener('contextmenu', e => { if (e.target.closest('.card, .step')) e.preventDefault(); });
+
+// a sheet (menu, card menu, themes...) closes with its x, a tap outside it, the Back button, or a swipe down from its top
+$('#backdrop').addEventListener('click', () => { if (isOpen('sheet')) closeSheet(); });
+let shSwipe = null;
+$('#sheet').addEventListener('touchstart', e => { shSwipe = e.touches.length === 1 && $('#sheet').scrollTop <= 0 ? { y: e.touches[0].clientY, dy: 0 } : null; }, { passive: true });
+$('#sheet').addEventListener('touchmove', e => {
+  if (!shSwipe) return;
+  shSwipe.dy = e.touches[0].clientY - shSwipe.y;
+  if (shSwipe.dy > 0) { e.preventDefault(); $('#sheet').style.transform = `translateY(${shSwipe.dy}px)`; }
+  else { shSwipe = null; $('#sheet').style.transform = ''; }  // up: the sheet scrolls as usual
+}, { passive: false });
+$('#sheet').addEventListener('touchend', () => {
+  if (!shSwipe) return;
+  const s = $('#sheet'), far = shSwipe.dy > 80;
+  shSwipe = null;
+  s.style.transition = 'transform .15s';
+  s.style.transform = far ? 'translateY(100%)' : '';
+  setTimeout(() => { s.style.transition = ''; if (far) closeSheet().then(() => { s.style.transform = ''; }); }, 160);
+});
 
 // swipe left / right on the board: the next / previous page
 let sw = null;

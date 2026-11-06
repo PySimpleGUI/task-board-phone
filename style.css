@@ -119,12 +119,12 @@ body.dragmode, body.dragmode * { cursor: grabbing; }
 a.pill { text-decoration: none; color: var(--text); }
 .progress { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; margin: 2px 0 8px; }
 .progress > div { height: 100%; background: var(--done); border-radius: 3px; }
-.step { display: flex; align-items: center; gap: 6px; min-height: 40px; }
+.step { display: flex; align-items: center; gap: 6px; min-height: 40px; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .step .sbox { width: 36px; height: 40px; display: grid; place-items: center; flex: none; margin-left: -8px; }
 .step .stext { flex: 1; min-width: 0; font-size: .95rem; line-height: 1.3; padding: 6px 0; overflow-wrap: anywhere; }
 .step.sdone .stext { text-decoration: line-through; color: var(--dim); }
 .step .sdel { width: 36px; height: 40px; display: grid; place-items: center; flex: none; margin-right: -8px; }
-.step input { flex: 1; height: 36px; border-radius: 8px; border: 1px solid var(--accent); background: var(--field); padding: 0 8px; outline: none; }
+.step input { user-select: text; -webkit-user-select: text; flex: 1; height: 36px; border-radius: 8px; border: 1px solid var(--accent); background: var(--field); padding: 0 8px; outline: none; }
 .addstep { display: flex; align-items: center; gap: 10px; height: 44px; color: var(--faint); }
 .addstep .plus { width: 20px; display: grid; place-items: center; }
 .addstep input { flex: 1; background: none; border: 0; outline: none; height: 40px; font-size: .95rem; }
@@ -161,6 +161,9 @@ a.pill { text-decoration: none; color: var(--text); }
 @keyframes up { from { transform: translateY(40px); opacity: .5; } }
 .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--chip-hover); margin: 2px auto 10px; }
 .shtitle { font-size: 1.05rem; font-weight: 700; margin: 2px 0 10px; line-height: 1.3; }
+#sheet .shtitle { padding-right: 38px; }
+.shclose { position: absolute; top: 4px; right: 6px; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 20px; }
+.shclose:active { background: var(--chip); }
 .row { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 48px; padding: 6px 4px; border-radius: 8px; text-align: left; font-size: 1rem; }
 .row:active { background: var(--chip); }
 .row .rsub { color: var(--dim); font-size: .82rem; }
