@@ -1,5 +1,6 @@
 // dropbox.js - signing in to Dropbox (PKCE, no app secret) and the few calls the board needs: list the data folder, download a file,
-// upload THIS phone's own file.  Every path goes through allowed(): only the Task_Board data folder, never 2026_Claude or 2026_Private.
+// upload THIS phone's own file.  Every path goes through allowed(): only the Task_Board data folder (and on Mike's phone the Claude page's
+// folder, /2026_Claude/Task_Board - nothing else in 2026_Claude), never 2026_Private.
 
 export const APP_KEY = 'h1v9djxhugixlo6';
 const AUTH_URL = 'https://www.dropbox.com/oauth2/authorize';
@@ -10,6 +11,17 @@ const K_TOKEN = 'tb.dropbox', K_PKCE = 'tb.pkce';
 
 export const REAL_FOLDER = '/2026DebPython/Task_Board';          // the shared folder (in Deb's Dropbox and Mike's)
 export const TEST_FOLDER = '/2026_PSG_Work/Tools/task_board_phone_test/Task_Board';   // a COPY, for testing on Mike's Dropbox
+
+// The Claude page (1.0.5): its folder is the ONE exception to FORBIDDEN, and only paired with its own board - the real board's is
+// /2026_Claude/Task_Board, the test copy's is next to the test copy.  Only Mike's Dropbox has it, so on anyone else's phone it never appears.
+export const CLAUDE_FOLDERS = { [REAL_FOLDER.toLowerCase()]: '/2026_Claude/Task_Board',
+  [TEST_FOLDER.toLowerCase()]: '/2026_PSG_Work/Tools/task_board_phone_test/Claude/Task_Board' };
+export const CLAUDE_OWNER = 'mike';                             // the Claude page is Mike's: no one else's phone ever looks for it
+export function claudeFolderFor(folder, me) {
+  const f = cleanFolder(folder);
+  const real = f && f.toLowerCase() === REAL_FOLDER.toLowerCase();
+  return f && me === CLAUDE_OWNER && (real || LOCAL) ? CLAUDE_FOLDERS[f.toLowerCase()] || null : null;   // the test pairing: on the PC only
+}
 
 const FORBIDDEN = /(^|\/)(2026_claude|2026_private)(\/|$)/i;
 
@@ -30,9 +42,13 @@ export function cleanFolder(path) {                             // '/a/b/Task_Bo
   if (!p || FORBIDDEN.test(p) || !/\/task_board$/i.test(p) || p.split('/').some(x => x === '..' || x === '.')) return null;
   return p;
 }
+const isClaudeFolder = folder => Object.values(CLAUDE_FOLDERS).some(c => c.toLowerCase() === String(folder || '').toLowerCase());
+function dataFolder(folder) {                                   // a board folder, or exactly one of the two Claude folders - nothing else
+  return cleanFolder(folder) || (isClaudeFolder(folder) ? folder : null);
+}
 function allowed(folder, path) {                                // the file must be directly inside the chosen data folder
-  const f = cleanFolder(folder);
-  if (!f || FORBIDDEN.test(path)) throw new Error('Not the board folder: ' + path);
+  const f = dataFolder(folder);
+  if (!f || (FORBIDDEN.test(path) && !isClaudeFolder(f)) || /2026_private/i.test(path)) throw new Error('Not the board folder: ' + path);
   const lower = path.toLowerCase();
   if (!lower.startsWith(f.toLowerCase() + '/') || path.slice(f.length + 1).includes('/')) throw new Error('Not in the board folder: ' + path);
   return path;
@@ -111,7 +127,7 @@ async function rpc(name, args) {
 }
 
 export async function folderExists(folder) {
-  const f = cleanFolder(folder);
+  const f = dataFolder(folder);
   if (!f) return false;
   if (MOCK) return (await (await mock('exists', { path: f })).json()).exists;
   try { const m = await rpc('files/get_metadata', { path: f }); return m['.tag'] === 'folder'; }
@@ -119,7 +135,7 @@ export async function folderExists(folder) {
 }
 
 export async function listFolder(folder) {                      // the .json files directly in the folder: [{name, path, rev, modified}]
-  const f = cleanFolder(folder);
+  const f = dataFolder(folder);
   if (!f) throw new Error('Not the board folder');
   if (MOCK) return (await mock('list', { path: f })).json();
   let res = await rpc('files/list_folder', { path: f, recursive: false, include_deleted: false });
@@ -143,7 +159,7 @@ export async function download(folder, path) {
 
 export async function uploadMine(folder, device, text, keepalive) {   // the ONLY write: <folder>/<device>.json
   if (!/^[a-z0-9]+_[a-z0-9-]+$/.test(device)) throw new Error('Bad device name');
-  const path = allowed(folder, cleanFolder(folder) + '/' + device + '.json');
+  const path = allowed(folder, dataFolder(folder) + '/' + device + '.json');
   if (MOCK) return (await mock('upload', { path }, new TextEncoder().encode(text))).json();
   const r = await call(CONTENT + 'files/upload', { method: 'POST', keepalive: !!keepalive,
     headers: { 'Content-Type': 'application/octet-stream', 'Dropbox-API-Arg': headerJson({ path, mode: 'overwrite', autorename: false, mute: true }) },

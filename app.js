@@ -2,7 +2,7 @@
 // Dropbox calls in dropbox.js.  Version and change log: version.js.
 import {
   Board, parseFile, palette, acc, accText, chipColors, mix, isLight, goodColor, dueLabel, parseDay, today, iso, addDays, ago, dayShort, monShort,
-  THEMES, STORES, PHONE_RE, LINK_RE, C_BOTH, C_SELECT, C_DONE, C_TODAY, C_SOON, C_LATE, C_NEW, userOf, seedDev, APP,
+  THEMES, STORES, PHONE_RE, LINK_RE, C_BOTH, C_CLAUDE, C_SELECT, C_DONE, C_TODAY, C_SOON, C_LATE, C_NEW, userOf, seedDev, APP,
 } from './engine.js';
 import * as DB from './dropbox.js';
 
@@ -16,7 +16,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } ca
 
 // ---------- this phone's settings (never shared) ----------
 const S = Object.assign({ me: '', device: '', folder: '', theme: 'Toybox', tsize: 100, page: '', who: [], today: false, star: false, showDone: false,
-  collapsed: [], lastSec: '' }, lsGet(K_SET, {}));
+  collapsed: [], lastSec: '', claude: '', claudeChecked: false }, lsGet(K_SET, {}));
 const saveSettings = () => lsSet(K_SET, S);
 const F = { who: new Set(S.who), today: S.today, star: S.star, showDone: S.showDone, query: '' };
 const saveFilter = () => { S.who = [...F.who]; S.today = F.today; S.star = F.star; S.showDone = F.showDone; saveSettings(); };
@@ -131,8 +131,9 @@ function peerText() {                                           // "Mike's PC 2 
 }
 function syncState() {
   if (Sync.error) return [C_LATE, navigator.onLine === false ? 'Offline - your changes wait on this phone' : Sync.error];
-  if (B.shared.dirtyAt && Date.now() - B.shared.dirtyAt > 30000) return [C_SOON, 'Not saved to Dropbox yet - trying again…'];
-  if (B.shared.dirtyAt) return [C_SOON, 'Saving…'];
+  const dirty = Math.min(...B.stores.map(st => st.dirtyAt || Infinity));
+  if (dirty < Infinity && Date.now() - dirty > 30000) return [C_SOON, 'Not saved to Dropbox yet - trying again…'];
+  if (dirty < Infinity) return [C_SOON, 'Saving…'];
   if (!Sync.lastOk) return [C_SOON, 'Connecting to Dropbox…'];
   return [C_DONE, `Synced  ·  ${peerText()}`];
 }
@@ -178,12 +179,14 @@ function renderPages() {
   const cur = currentPage();
   const sids = (B.secs[cur.id] || []).map(s => s.id);
   const folded = sids.length && sids.every(id => S.collapsed.includes(id));
+  const many = B.pages.length > 2;                              // DO, BUY and CLAUDE: smaller names and just the count, so all three fit
+  $('#pages').classList.toggle('many', many);
   $('#pages').innerHTML = B.pages.map(pg => {
     const c = goodColor(pg.color, '#2ecc71');
     const on = pg.id === cur.id;
-    const word = pg.kind === 'buy' ? 'to buy' : 'to do';
+    const word = many ? '' : pg.kind === 'buy' ? 'to buy' : 'to do';
     return `<button class="ptab ${on ? '' : 'off'}" data-act="page" data-ref="${esc(pg.id)}">
-      <span class="pname" style="color:${AT(c)};--mk:${mix(A(c), P.bg, 0.45)}">${esc(pg.name || 'Page')}</span><span class="pcount">${openCount(pg.id)} ${word}</span></button>`;
+      <span class="pname" style="color:${AT(c)};--mk:${mix(A(c), P.bg, 0.45)}">${esc(pg.name || 'Page')}</span><span class="pcount">${openCount(pg.id)} ${word}${B.isClaude(pg) ? ' ' + ic('lock', P.faint, 12) : ''}</span></button>`;
   }).join('') + `<button class="pfold" data-act="pagefold" style="background:${mix(P.bg, A(goodColor(cur.color, '#2ecc71')), 0.2)}" aria-label="Fold or open every section">
       ${ic(folded ? 'chev_r' : 'chev_d', AT(goodColor(cur.color, '#2ecc71')), 15)}</button>`;
 }
@@ -198,6 +201,7 @@ function renderFilters() {
   const c = B.counts();
   let h = fchip(`Everyone  ${c.all}`, !F.who.size, null, null, 'who', 'all');
   for (const [pid, name, color] of B.people) h += fchip(`${name}  ${c[pid]}`, F.who.has(pid), goodColor(color), 'person', 'who', pid);
+  if (B.claude) h += fchip(`Claude  ${c.claude}`, F.who.has('claude'), C_CLAUDE, 'person', 'who', 'claude');
   if (c.nobody || F.who.has('nobody')) h += fchip(`Nobody  ${c.nobody}`, F.who.has('nobody'), '#9aa5b5', null, 'who', 'nobody');
   h += '<span class="fsep"></span>';
   h += fchip(`Today  ${c.today}`, F.today, C_TODAY, 'cal', 'ftoday');
@@ -255,7 +259,7 @@ function sectionHTML(s) {
   let counts = '';
   if (all.length && !opens.length) counts = chip('All done', { color: C_DONE, icon: 'check' });
   else {
-    for (const pid of [...B.people.map(p => p[0]), 'both', '']) {
+    for (const pid of [...B.people.map(p => p[0]), ...(B.isClaude(s) ? ['claude'] : []), 'both', '']) {
       const n = opens.filter(it => (it.who || '') === pid).length;
       if (!n) continue;
       const pc = pid ? goodColor(B.person(pid)[2]) : '#9aa5b5';
@@ -269,7 +273,7 @@ function sectionHTML(s) {
     body = `<div class="sbody">${shown.map(cardHTML).join('') || (all.length && filtering() ? '' : '<div class="sempty">Nothing here - add a card</div>')}</div>`;
     if (UI.adding === s.id) {
       body += `<div class="addbox"><input id="addInput" placeholder="Add a card to ${esc(s.name || '')}" enterkeyhint="enter" autocomplete="off">
-        <div class="addhint">Enter adds it  ·  ${B.people.map(p => '@' + p[1].toLowerCase()).join(' or ')} gives it to someone  ·  ! stars it</div></div>`;
+        <div class="addhint">Enter adds it  ·  ${atNames(s)} gives it to someone  ·  ! stars it</div></div>`;
     } else if (!s.virtual) {
       body += `<button class="sfoot" data-act="add" data-ref="${esc(s.id)}">${ic('plus', P.faint, 15)}Add a card</button>`;
     } else body += '<div style="height:8px"></div>';
@@ -280,6 +284,7 @@ function sectionHTML(s) {
     ${body}</div>`;
 }
 const filtering = () => F.who.size || F.today || F.star || !!F.query.trim();
+const atNames = e => B.whoChoices(e).map(p => '@' + p[1].toLowerCase()).join(' or ');     // '@claude or @mike' on the Claude page
 
 function renderBoard() {
   const pg = currentPage();
@@ -317,7 +322,7 @@ function renderCard() {
   // who / due / mark / where
   const cur = it.who || '';
   let h = `<div class="prow"><div class="plabel">WHO</div><div class="pills">`;
-  for (const [pid, name, color] of B.whoChoices()) h += pill(name, { on: cur === pid, color: goodColor(color), icon: 'person', act: 'setwho', ref: pid });
+  for (const [pid, name, color] of B.whoChoices(it)) h += pill(name, { on: cur === pid, color: goodColor(color), icon: 'person', act: 'setwho', ref: pid });
   h += pill(B.person('both')[1], { on: cur === 'both', color: C_BOTH, act: 'setwho', ref: 'both' });
   h += pill('Nobody', { on: !cur, act: 'setwho', ref: '' }) + '</div></div>';
   const d = parseDay(it.due), td = today();
@@ -369,8 +374,10 @@ function renderCard() {
   // the conversation
   const msgs = B.comments[it.id] || [];
   const others = B.otherPeople().map(p => p[1]).join(' & ') || 'the other person';
+  const claude = B.isClaude(it);
   $('#cChat').innerHTML = `<div class="label">CONVERSATION</div>` + (msgs.length ? messagesHTML(msgs)
-    : `<div class="hint">No messages yet. Write one below - ${esc(others)} sees it on this card, and the card glows on their board until they look.</div>`);
+    : `<div class="hint">${claude ? 'No messages yet. Write one below - the next chat that reads the board sees it, and can answer here.'
+      : `No messages yet. Write one below - ${esc(others)} sees it on this card, and the card glows on their board until they look.`}</div>`);
   // who made it
   const f = it._f;
   const when = it.created_at ? ago(parseFloat(it.created_at)) : '';
@@ -381,7 +388,7 @@ function renderCard() {
   $('#cFoot').innerHTML = `<div class="foot">${esc(made)}${last[0] ? `   ·   last changed by ${esc(B.person(userOf(last[1]))[1])} ${esc(ago(last[0] / 1e6))}` : ''}</div>
     <div class="linkpills" style="margin-top:12px">${pill('Move to…', { icon: 'move', act: 'moveto' })}${pill('Copy', { icon: 'copy', act: 'copycard' })}
     ${pill('Mark unread', { icon: 'bell', act: 'unread' })}${pill('Delete card', { icon: 'trash', act: 'delcard', color: '#ff5c5c' })}</div>`;
-  $('#edMsg').placeholder = `Message ${others}…`;
+  $('#edMsg').placeholder = claude ? 'Message Claude about this card - the next chat reads it…' : `Message ${others}…`;
   if (scroller.scrollTop !== keepY) scroller.scrollTop = keepY;
 }
 
@@ -552,7 +559,7 @@ function cardMenu(cid) {
   h += row('open', 'Open', 'm_open');
   h += row('bell', unseen ? 'Mark as read' : 'Mark as unread', unseen ? 'm_read' : 'm_unread');
   h += row(it.done ? 'box' : 'check', it.done ? 'Not done yet' : 'Done', 'm_done');
-  h += `<div class="prow"><div class="plabel">WHO</div><div class="pills">` + B.whoChoices().map(([pid, name, color]) =>
+  h += `<div class="prow"><div class="plabel">WHO</div><div class="pills">` + B.whoChoices(it).map(([pid, name, color]) =>
     pill(name, { on: who === pid, color: goodColor(color), icon: 'person', act: 'm_who', ref: cid + '|' + pid })).join('') +
     pill(B.person('both')[1], { on: who === 'both', color: C_BOTH, act: 'm_who', ref: cid + '|both' }) + pill('Nobody', { on: !who, act: 'm_who', ref: cid + '|' }) + '</div></div>';
   const monday = addDays(td, ((8 - td.getDay()) % 7) || 7);
@@ -574,6 +581,7 @@ function moveSheet(cid) {
   UI.menuCard = cid;
   let h = `<div class="shtitle">Move “${esc((it.title || '').slice(0, 60))}” to</div>`;
   for (const pg of B.pages) {
+    if (B.isClaude(pg) !== B.isClaude(it)) continue;
     h += `<div class="label">${esc((pg.name || '').toUpperCase())}</div>`;
     for (const s of B.secs[pg.id] || []) {
       if (s.virtual) continue;
@@ -592,7 +600,7 @@ function addSheet() {                                           // the + button:
   if (!secs.some(s => s.id === S.lastSec)) S.lastSec = secs[0].id;
   const h = `<div class="shtitle">Add a card</div>
     <input id="quickAdd" class="sheetinput" placeholder="What needs doing?" enterkeyhint="enter" autocomplete="off">
-    <div class="addhint">${B.people.map(p => '@' + p[1].toLowerCase()).join(' or ')} gives it to someone  ·  ! stars it</div>
+    <div class="addhint">${atNames(pg)} gives it to someone  ·  ! stars it</div>
     <div class="label">INTO</div><div class="pills" id="quickSecs">${quickSecsHTML(secs)}</div>
     <div class="btnrow"><button class="btn" data-act="closesheet">Close</button><button class="btn primary" data-act="quickadd">Add</button></div>`;
   sheet('add', h);
@@ -628,7 +636,7 @@ function themeSheet() {
 function aboutSheet() {
   const log = (self.CHANGE_LOG || []).map(([d, v, t]) => `<div><b>${esc(v)}</b>  ${esc(d)} - ${esc(t)}</div>`).join('');
   sheet('about', `<div class="shtitle">Task Board for phones ${esc(VERSION)}</div>
-    <div class="log"><div>This phone: <b>${esc(B.device)}</b> (writes only ${esc(B.device)}.json)</div><div>Board folder: ${esc(S.folder)}</div>
+    <div class="log"><div>This phone: <b>${esc(B.device)}</b> (writes only ${esc(B.device)}.json)</div><div>Board folder: ${esc(S.folder)}</div>${B.claude ? `<div>Claude page folder: ${esc(S.claude)}</div>` : ''}
     <div>Dropbox account: ${esc(DB.accountId())}</div><div>Last synced: ${Sync.lastOk ? esc(ago(Sync.lastOk / 1000)) : 'not yet'}</div></div>
     <div class="label">CHANGE LOG</div><div class="log">${log}</div>`);
 }
@@ -967,7 +975,7 @@ function addFromSection() {
 function addCard(sid, text) {
   let { who, star, title } = B.parseQuick(text);
   if (!who && F.who.size) {                                     // while filtering, a new card goes to someone picked - so it doesn't vanish
-    const picks = B.whoChoices().map(p => p[0]).filter(p => F.who.has(p));
+    const picks = B.whoChoices(B.section(sid)).map(p => p[0]).filter(p => F.who.has(p));
     who = picks.includes(B.me) ? B.me : picks[0] || '';
   }
   B.newItem(sid, title || text, { who, star });
@@ -1017,7 +1025,7 @@ async function copyText(text, msg) {
 function persist() {                                            // this phone's copy of the board, so it opens offline and keeps unsent changes
   if (!B) return;
   clearTimeout(UI.persistTimer);
-  UI.persistTimer = setTimeout(() => lsSet(K_STATE, { store: B.shared.toJSON(), seen: B.seen, seenAll: B.seenAll, unread: [...B.unread], savedAt: Sync.savedAt,
+  UI.persistTimer = setTimeout(() => lsSet(K_STATE, { store: B.shared.toJSON(), claude: B.claude ? B.claude.toJSON() : null, seen: B.seen, seenAll: B.seenAll, unread: [...B.unread], savedAt: Sync.savedAt,
     clock: B.clock.last }), 250);
 }
 function localChange(redraw = true) {                           // after any change made here
@@ -1033,25 +1041,20 @@ async function syncNow(byHand = false) {
   Sync.busy = true;
   let merged = false;
   try {
-    const st = B.shared;
-    const mine = B.device + '.json';
-    const files = await DB.listFolder(S.folder);
-    for (const f of files) {
-      if (st.files[f.name] === f.rev) continue;
-      if (f.name === mine && st.files[f.name]) { st.files[f.name] = f.rev; continue; }     // my own file: read once (nobody else writes it)
-      const text = await DB.download(S.folder, f.path);
-      st.files[f.name] = f.rev;
-      const data = parseFile(text);
-      if (!data) continue;                                      // not a board file
-      if (f.name !== mine) st.peers[String(data.device || f.name.slice(0, -5))] = f.modified;
-      if (st.merge(data.ents).size) merged = true;
+    for (const [st, folder] of folders()) {
+      const first = !Object.keys(st.files).length;
+      if (await pull(st, folder)) {
+        merged = true;
+        if (first && st === B.claude) seeClaude();
+      }
     }
     if (merged) {
       B.rebuild();
       if (UI.sel && B.markSeen(UI.sel)) { /* the open card's news counts as seen */ }
       UI.pulse = Date.now();
     }
-    if (st.dirtyAt || (Date.now() - Sync.savedAt > HEARTBEAT_MS && document.visibilityState === 'visible')) await saveMine();
+    const beat = Date.now() - Sync.savedAt > HEARTBEAT_MS && document.visibilityState === 'visible';
+    for (const [st, folder] of folders()) if (st.dirtyAt || beat) await saveMine(st, folder);
     Sync.error = '';
     Sync.lastOk = Date.now();
     if (byHand) toast('Synced');
@@ -1067,11 +1070,45 @@ async function syncNow(byHand = false) {
     if (Sync.again) { Sync.again = false; setTimeout(() => syncNow(), 50); }
   }
 }
-async function saveMine(keepalive = false) {                    // the ONLY write: this phone's own file, everything it knows
-  const st = B.shared;
+function folders() {                                           // [store, Dropbox folder]: the board, and on Mike's phone the Claude page too
+  return [[B.shared, S.folder], ...(B.claude && S.claude ? [[B.claude, S.claude]] : [])];
+}
+async function pull(st, folder) {                               // merge every file in the folder that changed; true if anything did
+  let merged = false;
+  const mine = B.device + '.json';
+  for (const f of await DB.listFolder(folder)) {
+    if (st.files[f.name] === f.rev) continue;
+    if (f.name === mine && st.files[f.name]) { st.files[f.name] = f.rev; continue; }     // my own file: read once (nobody else writes it)
+    const text = await DB.download(folder, f.path);
+    st.files[f.name] = f.rev;
+    const data = parseFile(text);
+    if (!data) continue;                                        // not a board file
+    if (f.name !== mine) st.peers[String(data.device || f.name.slice(0, -5))] = f.modified;
+    if (st.merge(data.ents).size) merged = true;
+  }
+  return merged;
+}
+function seeClaude() {                                          // the Claude page's first arrival here: what's on it counts as seen (as on a new PC)
+  B.rebuild();
+  for (const ss of Object.values(B.items)) for (const it of ss) {
+    if (!B.isClaude(it)) continue;
+    const t = B.cardOtherStamp(it);
+    if (t > (B.seen[it.id] || 0)) B.seen[it.id] = t;
+  }
+}
+async function checkClaude() {                                  // once per setup: does this Dropbox have the Claude page's folder?  (only Mike's does)
+  if (S.claudeChecked) return;
+  const cf = DB.claudeFolderFor(S.folder, S.me);
+  try {
+    const found = !!cf && await DB.folderExists(cf);
+    S.claude = found ? cf : ''; S.claudeChecked = true; saveSettings();
+    if (found) { B.addClaude(); renderAll(); syncNow(); }
+  } catch (e) { /* no network: try again the next time the app starts */ }
+}
+async function saveMine(st, folder, keepalive = false) {         // the ONLY write: this phone's own file in that folder, everything it knows
   const n = st.edits;
   const text = st.text(VERSION);
-  const meta = await DB.uploadMine(S.folder, B.device, text, keepalive && text.length < 60000);
+  const meta = await DB.uploadMine(folder, B.device, text, keepalive && text.length < 60000);
   st.files[B.device + '.json'] = meta.rev;
   if (st.edits === n) st.dirtyAt = 0;                           // a change made during the upload stays waiting
   Sync.savedAt = Date.now();
@@ -1084,7 +1121,7 @@ function startTimers() {
   document.addEventListener('visibilitychange', () => {
     if (!B) return;
     if (document.visibilityState === 'visible') syncNow();
-    else { saveTitle(); saveNotes(); persist(); if (B.shared.dirtyAt) saveMine(true).catch(() => {}); }
+    else { saveTitle(); saveNotes(); persist(); for (const [st, folder] of folders()) if (st.dirtyAt) saveMine(st, folder, true).catch(() => {}); }
   });
   window.addEventListener('online', () => syncNow());
 }
@@ -1165,7 +1202,7 @@ async function setupAct(act, ref) {
       renderSetup(); return;
     }
     SETUP.reuse = ''; SETUP.error = ''; SETUP.devName = null;
-    S.me = me; S.device = `${me}_${name}`; S.folder = SETUP.folder; saveSettings();
+    S.me = me; S.device = `${me}_${name}`; S.folder = SETUP.folder; S.claude = ''; S.claudeChecked = false; saveSettings();
     B = SETUP.board;
     B.me = S.me; B.device = S.device;
     B.seenAll = B.clock.stamp();                                // first run on this phone: everything already here counts as seen (as on a new PC)
@@ -1187,7 +1224,8 @@ document.addEventListener('input', e => {
 function signOut() {
   DB.signOut();
   try { localStorage.removeItem(K_STATE); } catch (e) { /* */ }
-  S.me = S.device = S.folder = '';
+  S.me = S.device = S.folder = S.claude = '';
+  S.claudeChecked = false;
   saveSettings();
   location.reload();
 }
@@ -1199,6 +1237,7 @@ function begin() {
   renderAll();
   startTimers();
   syncNow();
+  checkClaude();
 }
 
 async function main() {
@@ -1207,9 +1246,11 @@ async function main() {
   try { await DB.finishSignIn(); } catch (e) { showSetup(e.message); return; }
   if (!DB.signedIn() || !S.me || !S.device || !S.folder) { showSetup(); return; }
   B = new Board({ me: S.me, device: S.device });
+  if (S.claude && S.claude === DB.claudeFolderFor(S.folder, S.me)) B.addClaude();
   const saved = lsGet(K_STATE, null);
   if (saved) {
     B.shared.load(saved.store);
+    if (B.claude && saved.claude) B.claude.load(saved.claude);
     B.seen = saved.seen || {}; B.seenAll = saved.seenAll || 0; B.unread = new Set(saved.unread || []);
     Sync.savedAt = saved.savedAt || 0;
     if (saved.clock) B.clock.see(saved.clock);

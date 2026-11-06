@@ -1,4 +1,4 @@
-// engine.js - the Task Board's data, ported line for line from task_board.pyw 1.0.7 (Clock, Store, rebuild, Batch / undo, what's new).
+// engine.js - the Task Board's data, ported line for line from task_board.pyw 1.0.8 (Clock, Store, rebuild, Batch / undo, what's new, the Claude page).
 // No screen code here, so tests can run it in Node next to the real task_board.pyw.
 //
 // How the sharing works (the same as the desktop board):  every device writes ONLY its own <person>_<device>.json in the shared folder and
@@ -236,6 +236,7 @@ export class Board {
     this.me = me; this.device = device;
     this.clock = new Clock(clockOffset);
     this.shared = new Store(this);
+    this.claude = null;                                         // the Claude page's folder (only on Mike's phone, only if his Dropbox has it)
     this.stores = [this.shared];
     this.seen = {}; this.seenAll = 0; this.unread = new Set();
     this.undoStack = [];
@@ -284,6 +285,12 @@ export class Board {
       (this.comments[e.item] = this.comments[e.item] || []).push(e);
   }
 
+  addClaude() {                                                 // = the desktop's G.claude: a second folder, merged into the same board
+    if (!this.claude) { this.claude = new Store(this); this.stores = [this.shared, this.claude]; this.rebuild(); }
+    return this.claude;
+  }
+  isClaude(e) { return !!(this.claude && e && e._st === this.claude); }
+
   // --- people ---
   person(pid) {
     for (const p of this.people) if (p[0] === pid) return p;
@@ -293,10 +300,10 @@ export class Board {
     return [n, n ? n[0].toUpperCase() + n.slice(1) : '', '#9aa5b5'];
   }
   otherPeople() { return this.people.filter(p => p[0] !== this.me); }
-  whoChoices() { return this.people; }                         // the phone never sees the Claude page
+  whoChoices(it) { return this.isClaude(it) ? [this.person(this.me), this.person('claude')] : this.people; }   // = who_choices
   forWhom(it) {
     const w = it.who || '';
-    if (w === 'both') return new Set(this.people.map(p => p[0]));
+    if (w === 'both') return this.isClaude(it) ? new Set([this.me, 'claude']) : new Set(this.people.map(p => p[0]));
     return w ? new Set([w]) : new Set();
   }
   quiet(device) { return userOf(device) === this.me || seedDev(device); }
@@ -352,8 +359,10 @@ export class Board {
   }
   newItem(secId, title, { who = '', star = false, shop = '' } = {}) {
     const eid = newId();
+    const sec = this.section(secId);                            // = new_item: the card goes into its section's folder
+    const st = sec && !sec.virtual ? sec._st : this.shared;
     this.batch('Added card').put(eid, { type: 'item', section: secId, title, who, star, shop, done: false, notes: '', due: '',
-      pos: this.nextPos(secId), created_by: this.me, created_at: Date.now() / 1000, deleted: false }, this.shared).done();
+      pos: this.nextPos(secId), created_by: this.me, created_at: Date.now() / 1000, deleted: false }, st).done();
     return eid;
   }
   toggleDone(cid) {
@@ -365,7 +374,7 @@ export class Board {
   cycleWho(cid) {
     const it = this.ents[cid];
     if (!it) return;
-    const order = [...this.whoChoices().map(p => p[0]), 'both', ''];
+    const order = [...this.whoChoices(it).map(p => p[0]), 'both', ''];
     const cur = it.who || '';
     const i = order.indexOf(cur);
     this.edit(cid, 'Changed who', { who: i >= 0 ? order[(i + 1) % order.length] : order[0] });
@@ -393,15 +402,16 @@ export class Board {
     const pos = checks.length ? (parseFloat(checks[checks.length - 1].pos) || 0) + 1 : 1.0;
     return this.batch('Added step').put(newId(), { type: 'check', item: cid, text, done: false, pos, deleted: false }, it._st).done();
   }
+  sameFolder(it, sid) { const sec = this.section(sid); return !!sec && (sec.virtual || this.isClaude(sec) === this.isClaude(it)); }   // phone: no moving on / off the Claude page
   moveCard(cid, sid) {                                          // to the end of another section's open cards
     const it = this.ents[cid];
-    if (!it || it.section === sid) return null;
+    if (!it || it.section === sid || !this.sameFolder(it, sid)) return null;
     const sec = this.section(sid);
     return this.edit(cid, `Moved to ${sec ? sec.name : 'another section'}`, { section: sid, pos: this.nextPos(sid) });
   }
   placeCard(cid, sid, index, F) {                               // = move_card in task_board.pyw: a dragged card dropped into section sid at
     const it = this.ents[cid];                                  // `index` among the cards shown there (not counting it); open and checked-off
-    if (!it) return null;                                       // cards are shown in two groups, so it goes right after the shown card of its
+    if (!it || !this.sameFolder(it, sid)) return null;            // cards are shown in two groups, so it goes right after the shown card of its
     const shown = this.shownItems(sid, F).filter(c => c.id !== cid);   // own kind above the drop (or right before the first one) in the real order
     if (it.section === sid) {
       const cur = this.shownItems(sid, F).map(c => c.id);
@@ -583,7 +593,7 @@ export class Board {
     const only = (it, pid) => { const s = this.forWhom(it); return s.size === 1 && s.has(pid); };
     const c = { all: opens.length, both: opens.filter(it => it.who === 'both').length, nobody: opens.filter(it => !it.who).length };
     for (const [pid] of this.people) c[pid] = opens.filter(it => only(it, pid)).length;
-    c.claude = opens.filter(it => only(it, 'claude')).length;   // always 0 here: the Claude page never reaches the shared folder
+    c.claude = opens.filter(it => only(it, 'claude')).length;   // 0 unless this phone has the Claude page
     const td = today();
     c.today = opens.filter(it => { const d = parseDay(it.due); return d && d <= td; }).length;
     c.star = opens.filter(it => it.star).length;
@@ -639,6 +649,7 @@ export class Board {
     const names = {};
     for (const p of this.people) { names[p[0]] = p[0]; names[p[1].toLowerCase()] = p[0]; }
     names.both = 'both'; names.all = 'both';
+    if (this.claude) names.claude = 'claude';
     for (const word of text.split(/\s+/).filter(Boolean)) {
       const key = word.slice(1).toLowerCase().replace(/^[.,]+|[.,]+$/g, '');
       if (word.startsWith('@') && key in names) who = names[key];
