@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Task Board</title>
+<meta name="description" content="Mike and Deb's shared to-do / to-buy board, on the phone.">
+<meta name="theme-color" content="#1b202b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/favicon-64.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kalam:wght@700&display=swap">
+<link rel="stylesheet" href="style.css">
+<script src="version.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="app">
+  <header id="hdr"></header>
+  <nav id="pages"></nav>
+  <div id="filters"></div>
+  <div id="searchRow" hidden><span class="sicon"></span><input id="search" type="search" placeholder="Search the cards" autocomplete="off"><button class="iconbtn" data-act="clearsearch" aria-label="Close search"></button></div>
+  <main id="board"></main>
+  <button id="fab" data-act="fab" aria-label="Add a card"></button>
+</div>
+
+<section id="cardScreen" class="screen" hidden>
+  <div class="topbar"><button class="iconbtn" data-act="back" aria-label="Back"></button><div id="crumb"></div></div>
+  <div class="scroll" id="cardScroll">
+    <div id="cTop"></div>
+    <textarea id="edTitle" class="edtitle" rows="1" placeholder="What needs doing?" enterkeyhint="done"></textarea>
+    <div id="cProps"></div>
+    <div class="label">NOTES</div>
+    <textarea id="edNotes" class="ednotes" rows="3" placeholder="Notes - phone numbers, addresses, what to ask..."></textarea>
+    <div id="cLinks"></div>
+    <div id="cChecks"></div>
+    <div class="addstep"><span class="plus"></span><input id="edStep" placeholder="Add a step" enterkeyhint="enter" autocomplete="off"></div>
+    <div id="cChat"></div>
+    <div id="cFoot"></div>
+  </div>
+  <div class="composer"><textarea id="edMsg" rows="1" placeholder="Message"></textarea><button class="send" data-act="send" aria-label="Send"></button></div>
+</section>
+
+<section id="newScreen" class="screen" hidden>
+  <div class="topbar"><button class="iconbtn" data-act="back" aria-label="Back"></button><div class="toptitle">What's new</div><div id="seenAllBtn"></div></div>
+  <div class="scroll" id="newScroll"><div id="newList"></div><div id="boardMsgs"></div></div>
+  <div class="composer"><textarea id="edBoardMsg" rows="1" placeholder="Message"></textarea><button class="send" data-act="sendboard" aria-label="Send"></button></div>
+</section>
+
+<section id="setup" class="screen" hidden></section>
+
+<div id="backdrop" hidden></div>
+<div id="sheet" hidden></div>
+<div id="toast" hidden></div>
+<input id="datePick" type="date" tabindex="-1" aria-hidden="true">
+</body>
+</html>
