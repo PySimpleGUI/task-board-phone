@@ -416,6 +416,14 @@ export class Board {
     if (it.section !== sid) fields.section = sid;
     return b.put(cid, fields).done();
   }
+  placeStep(card, ck, index) {                                  // = move_step in task_board.pyw: checklist step ck to `index` among its other steps
+    const checks = this.checks[card] || [], ids = checks.map(c => c.id);
+    if (!ids.includes(ck) || ids.indexOf(ck) === index) return null;
+    const rest = checks.filter(c => c.id !== ck);
+    const b = this.batch('Moved step');
+    const pos = this.posNear(rest, index > 0 ? rest[index - 1].id : null, index === 0 && rest.length ? rest[0].id : null, b);
+    return b.put(ck, { pos }).done();
+  }
   posNear(items, after, before, b) {                            // = pos_near: a pos right after `after` (or right before `before`; neither = the end).
     if (!items.length) return 1.0;                              // If the gap has become too small the cards are numbered 1, 2, 3 ... first (in b)
     const ids = items.map(e => e.id), pos = n => parseFloat(items[n].pos) || 0;

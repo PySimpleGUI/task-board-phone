@@ -139,7 +139,7 @@ function syncState() {
 
 // ============================================================ RENDERING ============================================================
 function renderAll() {
-  if (!B) return;
+  if (!B || DRAG) return;                                       // mid-drag (a sync came in): the drop redraws everything
   renderHeader();
   renderPages();
   renderFilters();
@@ -358,7 +358,7 @@ function renderCard() {
         ch += `<div class="step"><span class="sbox">${ic(c.done ? 'boxon' : 'box', c.done ? A(C_DONE) : P.dim, 20)}</span><input id="edStepText" value="${esc(c.text || '')}" enterkeyhint="done"></div>`;
         continue;
       }
-      ch += `<div class="step ${c.done ? 'sdone' : ''}"><button class="sbox" data-act="tick" data-ref="${esc(c.id)}">${ic(c.done ? 'boxon' : 'box', c.done ? A(C_DONE) : P.dim, 20)}</button>
+      ch += `<div class="step ${c.done ? 'sdone' : ''}" data-ck="${esc(c.id)}"><button class="sbox" data-act="tick" data-ref="${esc(c.id)}">${ic(c.done ? 'boxon' : 'box', c.done ? A(C_DONE) : P.dim, 20)}</button>
         <div class="stext" data-act="editstep" data-ref="${esc(c.id)}">${esc(c.text || '')}</div>
         <button class="sdel" data-act="delstep" data-ref="${esc(c.id)}" aria-label="Delete step">${ic('x', P.faint, 15)}</button></div>`;
     }
@@ -787,11 +787,12 @@ document.addEventListener('click', e => {
   }
 });
 
-// hold a card: it lifts.  Let go without moving = its menu.  Move while holding = drag it to a new place, in its section or another one
+// hold a card: it lifts.  Let go without moving = its menu.  Move while holding = drag it to a new place, in its section or another one.
+// A checklist step in the open card works the same way (up or down among its steps; letting go without moving does nothing)
 let lp = null, DRAG = null;
 document.addEventListener('pointerdown', e => {
   UI.longPressed = false;                                       // a new touch: the long-press before it is over
-  const card = e.target.closest('.card');
+  const card = e.target.closest('.card') || e.target.closest('#cChecks .step[data-ck]');
   if (!card || e.button > 0 || DRAG) return;
   lp = { x: e.clientX, y: e.clientY, card, armed: false, timer: setTimeout(() => {
     if (!lp) return;
@@ -805,14 +806,14 @@ document.addEventListener('pointermove', e => {
   if (!lp) return;
   const d = Math.hypot(e.clientX - lp.x, e.clientY - lp.y);
   if (!lp.armed) { if (d > 10) { clearTimeout(lp.timer); lp = null; } return; }       // moved before the hold: it's a scroll
-  if (d > 8 && lp.card.closest('#board') && !lp.card.closest('[data-virtual]')) startDrag(e.clientX, e.clientY);
+  if (d > 8 && (lp.card.dataset.ck || lp.card.closest('#board') && !lp.card.closest('[data-virtual]'))) startDrag(e.clientX, e.clientY);
 });
 document.addEventListener('pointerup', () => {
   if (DRAG) { endDrag(true); return; }
   if (!lp) return;
   clearTimeout(lp.timer);
   const p = lp; lp = null;
-  if (p.armed) { p.card.classList.remove('lifted'); cardMenu(p.card.dataset.cid); }
+  if (p.armed) { p.card.classList.remove('lifted'); if (!p.card.dataset.ck) cardMenu(p.card.dataset.cid); }
 });
 document.addEventListener('pointercancel', () => {
   if (DRAG) { endDrag(false); return; }
@@ -829,7 +830,7 @@ function startDrag(x, y) {
   document.body.appendChild(ghost);
   card.classList.remove('lifted');
   card.classList.add('gap');
-  DRAG = { cid: card.dataset.cid, card, ghost, dx: x - r.left, dy: y - r.top, x, y, raf: 0 };
+  DRAG = { cid: card.dataset.cid, ck: card.dataset.ck, card, ghost, dx: x - r.left, dy: y - r.top, x, y, raf: 0 };
   lp = null;
   document.body.classList.add('dragmode');
   dragMove(x, y);
@@ -839,6 +840,13 @@ function dragMove(x, y) {
   DRAG.x = x; DRAG.y = y;
   DRAG.ghost.style.left = (x - DRAG.dx) + 'px';
   DRAG.ghost.style.top = (y - DRAG.dy) + 'px';
+  if (DRAG.ck) {                                                // a step: up or down among the open card's steps
+    const box = $('#cChecks'), steps = [...box.querySelectorAll('.step[data-ck]')].filter(c => c !== DRAG.card);
+    const next = steps.find(c => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; });
+    if (next) { if (DRAG.card.nextElementSibling !== next) box.insertBefore(DRAG.card, next); }
+    else if (steps.length && steps[steps.length - 1].nextElementSibling !== DRAG.card) steps[steps.length - 1].after(DRAG.card);
+    return;
+  }
   const el = document.elementFromPoint(Math.min(Math.max(x, 2), innerWidth - 2), y);
   const sec = el && el.closest('#board .sec');
   const body = sec && !sec.dataset.virtual && sec.querySelector('.sbody');   // a folded section has no body: no drop there
@@ -851,9 +859,10 @@ function dragMove(x, y) {
 }
 function dragScroll() {                                         // near the top or bottom edge: the board scrolls
   if (!DRAG) return;
-  const top = $('#hdr').getBoundingClientRect().bottom + 60, bottom = innerHeight - 70;
+  const sc = DRAG.ck ? $('#cardScroll') : null, sr = sc && sc.getBoundingClientRect();   // a step: the open card scrolls instead
+  const top = sc ? sr.top + 50 : $('#hdr').getBoundingClientRect().bottom + 60, bottom = sc ? sr.bottom - 50 : innerHeight - 70;
   const v = DRAG.y < top ? -Math.min(18, (top - DRAG.y) / 3 + 4) : DRAG.y > bottom ? Math.min(18, (DRAG.y - bottom) / 3 + 4) : 0;
-  if (v) { window.scrollBy(0, v); dragMove(DRAG.x, DRAG.y); }
+  if (v) { (sc || window).scrollBy(0, v); dragMove(DRAG.x, DRAG.y); }
   DRAG.raf = requestAnimationFrame(dragScroll);
 }
 function endDrag(drop) {
@@ -863,13 +872,19 @@ function endDrag(drop) {
   d.ghost.remove();
   document.body.classList.remove('dragmode');
   UI.dragEnded = Date.now();
+  if (d.ck) {
+    const index = [...$('#cChecks').querySelectorAll('.step[data-ck]')].indexOf(d.card);
+    const b = drop && index >= 0 ? B.placeStep(UI.sel, d.ck, index) : null;   // redraws everything itself
+    if (b) toast('Moved step', b); else renderAll();
+    return;
+  }
   const body = d.card.parentNode, sec = body && body.closest('.sec');
   if (drop && sec) {
     const index = [...body.querySelectorAll('.card')].indexOf(d.card);
     const b = B.placeCard(d.cid, sec.dataset.sid, index, F);     // redraws the board itself
     if (b) { toast(b.label === 'Moved card' ? 'Moved' : b.label, b); return; }
   }
-  renderBoard();
+  renderAll();
 }
 document.addEventListener('contextmenu', e => { if (e.target.closest('.card')) e.preventDefault(); });
 
