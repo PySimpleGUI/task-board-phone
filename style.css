@@ -207,3 +207,19 @@ body.insheet #toast { bottom: auto; top: calc(12px + env(safe-area-inset-top, 0p
 .bigbtn:disabled { opacity: .5; }
 .ver { text-align: center; color: var(--faint); font-size: .8rem; margin-top: 10px; }
 #datePick { position: fixed; left: -100px; top: 0; width: 1px; height: 1px; opacity: 0; }
+/* the Bin (1.1.0): search, kind chips, Restore / Select all, one row per deleted thing */
+.hrow .hchip { padding: 0 10px; gap: 5px; }
+.hrow .hchip.binchip { padding: 0 9px 0 8px; }
+.binsearch { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; border-radius: 21px; background: var(--field); border: 1px solid var(--field-line); margin-bottom: 10px; }
+.binsearch input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: 1rem; color: inherit; }
+.binsearch input::-webkit-search-cancel-button { display: none; }
+.binkinds { margin-bottom: 10px; }
+.binbar { display: flex; gap: 8px; align-items: center; margin: 2px 0 8px; }
+.binbar .btn { display: inline-flex; align-items: center; gap: 6px; }
+.binrow { align-items: flex-start; gap: 12px; padding: 8px 6px; }
+.binrow > svg { flex: none; margin-top: 1px; }
+.binrow.on { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.bintext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bintitle { font-weight: 700; overflow-wrap: anywhere; }
+.binkind { flex: none; font-size: .75rem; color: var(--faint); margin-top: 3px; }
+.binempty { margin: 12px 4px; }

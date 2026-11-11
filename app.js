@@ -2,7 +2,7 @@
 // Dropbox calls in dropbox.js.  Version and change log: version.js.
 import {
   Board, parseFile, palette, acc, accText, chipColors, mix, isLight, goodColor, dueLabel, parseDay, today, iso, addDays, ago, dayShort, monShort,
-  THEMES, STORES, PHONE_RE, LINK_RE, C_BOTH, C_CLAUDE, C_SELECT, C_DONE, C_TODAY, C_SOON, C_LATE, C_NEW, userOf, seedDev, APP,
+  THEMES, STORES, PHONE_RE, LINK_RE, C_BOTH, C_CLAUDE, C_SELECT, C_DONE, C_TODAY, C_SOON, C_LATE, C_NEW, userOf, seedDev, APP, DONE_MODES, DONE_LABELS,
 } from './engine.js';
 import * as DB from './dropbox.js';
 
@@ -15,16 +15,18 @@ const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JS
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* full or private mode */ } };
 
 // ---------- this phone's settings (never shared) ----------
-const S = Object.assign({ me: '', device: '', folder: '', theme: 'Toybox', tsize: 100, page: '', who: [], today: false, star: false, showDone: false,
+const S = Object.assign({ me: '', device: '', folder: '', theme: 'Toybox', tsize: 100, page: '', who: [], today: false, star: false, done: '',
   collapsed: [], lastSec: '', claude: '', claudeChecked: false }, lsGet(K_SET, {}));
+if (!DONE_MODES.includes(S.done)) S.done = S.showDone ? 'show' : 'hide';   // 1.0.x saved Show done as true / false
+delete S.showDone;
 const saveSettings = () => lsSet(K_SET, S);
-const F = { who: new Set(S.who), today: S.today, star: S.star, showDone: S.showDone, query: '' };
-const saveFilter = () => { S.who = [...F.who]; S.today = F.today; S.star = F.star; S.showDone = F.showDone; saveSettings(); };
+const F = { who: new Set(S.who), today: S.today, star: S.star, done: S.done, query: '' };   // done: the Done chip, 'hide' / 'show' / 'only' (1.1.0)
+const saveFilter = () => { S.who = [...F.who]; S.today = F.today; S.star = F.star; S.done = F.done; saveSettings(); };
 
 let B = null;                                                   // the Board (engine.js)
 let P = palette(S.theme);
 const UI = { sel: null, layers: [], adding: null, toast: null, toastTimer: null, notesDirty: false, notesBase: '', titleBase: '', notesTimer: null,
-  pickMsg: null, editStep: null, newVersion: '', pulse: 0, sheetKind: '' };
+  pickMsg: null, editStep: null, newVersion: '', pulse: 0, sheetKind: '', binSel: new Set(), binKind: 'all', binQuery: '' };
 const Sync = { busy: false, again: false, timer: null, saveTimer: null, error: '', savedAt: 0, lastOk: 0, started: false };
 
 // ---------- icons: the desktop board's line icons, as SVG on the same 24-unit grid ----------
@@ -147,6 +149,7 @@ function renderAll() {
   renderBoard();
   if (isOpen('card')) renderCard();
   if (isOpen('new')) renderNew();
+  if (isOpen('sheet') && UI.sheetKind === 'bin') renderBin();
   document.title = (B.unseenCount() ? `(${B.unseenCount()}) ` : '') + (B.board.title || APP);
 }
 
@@ -154,11 +157,13 @@ function renderHeader() {
   const [color, text] = syncState();
   const n = B.unseenCount();
   const me = B.person(B.me);
+  const nb = B.binRows().length;                                // the Bin - always there, with its count (like the desktop's header)
   $('#hdr').innerHTML = `
     <div class="hrow">
       <img class="hicon" src="icons/icon-192.png" alt="">
       <div class="htitle">${esc(B.board.title || APP)}</div>
       ${UI.newVersion ? `<button class="hchip" data-act="update" style="background:${A(C_SELECT)};color:#fff">${ic('undo', '#fff', 15)}Update</button>` : ''}
+      <button class="hchip binchip" data-act="bin" style="background:${P.chip};color:${P.text}">${ic('trash', P.dim, 15)}${nb ? `Bin ${nb}` : 'Bin'}</button>
       ${n ? `<button class="hchip" data-act="whatsnew" style="background:${A(C_NEW)};color:#1b1206">${ic('bell', '#1b1206', 15)}${n} new</button>` : ''}
       <button class="iconbtn" data-act="menu" aria-label="Menu">${ic('menu', P.text, 22)}</button>
     </div>
@@ -206,9 +211,11 @@ function renderFilters() {
   h += '<span class="fsep"></span>';
   h += fchip(`Today  ${c.today}`, F.today, C_TODAY, 'cal', 'ftoday');
   h += fchip(`Starred  ${c.star}`, F.star, C_SOON, 'star', 'fstar');
-  h += fchip('Done', F.showDone, C_DONE, 'check', 'fdone');
+  h += fchip(DONE_LABELS[F.done], F.done !== 'hide', C_DONE, 'check', 'fdone');   // hide -> show -> only done -> hide
   h += fchip('', !!F.query, null, 'search', 'search');
-  $('#filters').innerHTML = h;
+  const fl = $('#filters'), x = fl.scrollLeft;                 // a sync redraws the chips: the strip keeps its place (it jumped back to the start)
+  fl.innerHTML = h;
+  fl.scrollLeft = x;
 }
 
 function phoneMarked(text) {                                    // phone numbers in a title get underlined, like the desktop
@@ -283,7 +290,7 @@ function sectionHTML(s) {
       <span class="sname" style="color:${AT(color)}">${esc((s.name || 'Section').toUpperCase())}</span><span class="scounts">${counts}</span></button>
     ${body}</div>`;
 }
-const filtering = () => F.who.size || F.today || F.star || !!F.query.trim();
+const filtering = () => F.who.size || F.today || F.star || F.done === 'only' || !!F.query.trim();
 const atNames = e => B.whoChoices(e).map(p => '@' + p[1].toLowerCase()).join(' or ');     // '@claude or @mike' on the Claude page
 
 function renderBoard() {
@@ -616,7 +623,8 @@ function menuSheet() {
   let h = `<div class="shtitle">${esc(B.board.title || APP)}</div>`;
   h += row('bell', "What's new", 'whatsnew', n ? `${n} new` : '');
   h += row('undo', 'Undo', 'undo', B.undoStack.length ? B.undoStack[B.undoStack.length - 1].label : 'nothing to undo');
-  h += row('trash', 'Bring back a deleted card…', 'bringback');
+  const nb = B.binRows().length;
+  h += row('trash', 'Bin', 'bin', nb ? `${nb} deleted - restore them where they were` : 'empty');
   h += row('sync', 'Sync now', 'syncnow', Sync.lastOk ? `last synced ${ago(Sync.lastOk / 1000)}` : '');
   h += row('palette', 'Theme', 'themes', S.theme);
   h += `<div class="prow" style="padding-left:4px">${ic('text', P.dim, 20)}<div class="pills" style="margin-left:10px">` +
@@ -641,22 +649,57 @@ function aboutSheet() {
     <div class="label">CHANGE LOG</div><div class="log">${log}</div>`);
 }
 
-function bringBackSheet() {
-  const rows = B.deletedCards();
-  UI.bbRows = rows;
-  let h = `<div class="shtitle">Bring back a deleted card</div>`;
-  if (!rows.length) h += '<div class="hint">No deleted cards.</div>';
-  rows.slice(0, 40).forEach(([t, d, cid, st], i) => {
-    const f = st.ents.get(cid);
-    const title = (f.title || [''])[0];
-    const sec = B.ents[(f.section || [''])[0]];
-    const kids = B.goneWith(st, cid);
-    const steps = kids.filter(k => (st.ents.get(k).type || [''])[0] === 'check').length, msgs = kids.length - steps;
-    const extra = [steps ? `${steps} step${steps > 1 ? 's' : ''}` : '', msgs ? `${msgs} message${msgs > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
-    h += `<button class="row" data-act="bb" data-ref="${i}">${ic('undo', P.dim, 20)}<span style="flex:1">${esc(title)}<br>
-      <span class="rsub">deleted ${esc(ago(t / 1e6))} by ${esc(B.person(userOf(d))[1])}${sec ? ' from ' + esc(sec.name || '') : ''}${extra ? '  ·  ' + esc(extra) : ''}</span></span></button>`;
-  });
-  sheet('bringback', h);
+// ---------- the Bin (1.1.0 = the desktop's Bin, 1.2.0): everything deleted, newest first.  Tap = tick, Restore N = one change (Undo deletes them again)
+const BIN_KINDS = [['all', 'All'], ['card', 'Cards'], ['section', 'Sections'], ['step', 'Steps'], ['message', 'Messages']];
+const binKinds = k => k === 'section' ? ['section', 'page'] : [k];
+function binShown() {                                           // = bin_shown: the rows after the kind chip and the search
+  const words = UI.binQuery.toLowerCase().split(/\s+/).filter(Boolean);
+  return B.binRows().filter(r => (UI.binKind === 'all' || binKinds(UI.binKind).includes(r.kind)) && words.every(w => `${r.title} ${r.where}`.toLowerCase().includes(w)));
+}
+function binSheet() {
+  UI.binSel = new Set(); UI.binKind = 'all'; UI.binQuery = '';
+  sheet('bin', `<div class="shtitle">Bin</div>
+    <div class="binsearch">${ic('search', P.dim, 17)}<input id="binSearch" type="search" placeholder="Find in the Bin" autocomplete="off" enterkeyhint="search"></div>
+    <div id="binBody"></div>`);
+  renderBin();
+}
+function renderBin() {                                          // = render_bin: kind chips, Restore / Select all, one row per deleted thing - what, where, who, when
+  const body = $('#binBody');
+  if (!body) return;
+  const all = B.binRows(), shown = binShown();
+  const ids = new Set(all.map(r => r.id));
+  for (const id of [...UI.binSel]) if (!ids.has(id)) UI.binSel.delete(id);   // restored meanwhile (here or on another device)
+  let h = '<div class="pills binkinds">' + BIN_KINDS.map(([k, name]) => {
+    const n = k === 'all' ? all.length : all.filter(r => binKinds(k).includes(r.kind)).length;
+    return n || UI.binKind === k ? pill(`${name}  ${n}`, { on: UI.binKind === k, act: 'binkind', ref: k }) : '';   // kinds with nothing in the Bin: no chip
+  }).join('') + '</div>';
+  if (shown.length) {
+    const sel = shown.filter(r => UI.binSel.has(r.id));
+    const every = sel.length === shown.length;
+    h += `<div class="binbar"><button class="btn primary" data-act="binrestore" ${sel.length ? '' : 'disabled'}>${ic('undo', '#fff', 16)}<span>${sel.length ? `Restore ${sel.length}` : 'Restore'}</span></button>
+      <button class="btn" data-act="binall" data-ref="${every ? '' : '1'}">${every ? 'Select none' : 'Select all'}</button></div>`;
+  }
+  for (const r of shown.slice(0, 150)) {
+    const on = UI.binSel.has(r.id);
+    const title = ['step', 'message'].includes(r.kind) ? `“${r.title}”` : ['section', 'page'].includes(r.kind) ? r.title.toUpperCase() : r.title;
+    const line = [r.where, `deleted by ${B.whoDid(r.dev)}`, ago(r.t / 1e6), r.extra].filter(Boolean).join('  ·  ');
+    h += `<button class="row binrow ${on ? 'on' : ''}" data-act="bintick" data-ref="${esc(r.id)}">${ic(on ? 'boxon' : 'box', on ? A(C_SELECT) : P.dim, 20)}
+      <span class="bintext"><span class="bintitle">${esc(title)}</span><span class="rsub">${esc(line)}</span></span><span class="binkind">${esc(r.kind)}</span></button>`;
+  }
+  if (shown.length > 150) h += `<div class="hint">... and ${shown.length - 150} older ones - type in the search box to find them</div>`;
+  if (!all.length) h += '<div class="hint binempty">The Bin is empty.  Anything deleted - a card, a section, a step, one of your messages - comes here, and Restore puts it back where it was.  Nothing is ever really deleted.</div>';
+  else if (!shown.length) h += '<div class="hint binempty">Nothing in the Bin matches</div>';
+  body.innerHTML = h;
+}
+function restoreTicked() {
+  const rows = binShown().filter(r => UI.binSel.has(r.id));
+  if (!rows.length) { toast('Tick what to restore first (tap its row)'); return; }
+  const res = B.restore(rows);
+  for (const id of res.back) UI.binSel.delete(id);
+  const one = rows[0];
+  const text = rows.length === 1 ? `Restored the ${one.kind} “${short(one.title, 40)}”` : `Restored ${rows.length} things from the Bin`;
+  const first = res.first && B.ents[res.first] && !B.ents[res.first].deleted ? res.first : null;
+  closeSheet().then(() => { if (first) openCard(first); toast(text, res.batch); });
 }
 
 function askText(title, value, done) {                          // a one-line question (e.g. Other shop)
@@ -726,7 +769,7 @@ document.addEventListener('click', e => {
       saveFilter(); renderFilters(); renderBoard(); break;
     case 'ftoday': F.today = !F.today; saveFilter(); renderFilters(); renderBoard(); break;
     case 'fstar': F.star = !F.star; saveFilter(); renderFilters(); renderBoard(); break;
-    case 'fdone': F.showDone = !F.showDone; saveFilter(); renderFilters(); renderBoard(); break;
+    case 'fdone': F.done = DONE_MODES[(DONE_MODES.indexOf(F.done) + 1) % DONE_MODES.length]; saveFilter(); renderFilters(); renderBoard(); break;
     case 'search': $('#searchRow').hidden = false; $('#search').focus(); break;
     case 'clearsearch': F.query = ''; $('#search').value = ''; $('#searchRow').hidden = true; renderFilters(); renderBoard(); break;
     // sections and cards on the board
@@ -783,8 +826,11 @@ document.addEventListener('click', e => {
     case 'quickadd': quickAdd(); break;
     case 'undo': closeSheet(); toast(B.undo()); break;
     case 'toastundo': { const b = UI.toast; $('#toast').hidden = true; UI.toast = null; toast(B.undo(b)); break; }
-    case 'bringback': bringBackSheet(); break;
-    case 'bb': { const row = UI.bbRows[+ref]; closeSheet().then(() => { if (row) { const b = B.bringBack([row]); toast('Brought back the card', b); openCard(row[2]); } }); break; }
+    case 'bin': binSheet(); break;
+    case 'binkind': UI.binKind = ref; renderBin(); break;
+    case 'bintick': if (UI.binSel.has(ref)) UI.binSel.delete(ref); else UI.binSel.add(ref); renderBin(); break;
+    case 'binall': UI.binSel = ref ? new Set(binShown().map(r => r.id)) : new Set(); renderBin(); break;
+    case 'binrestore': restoreTicked(); break;
     case 'themes': themeSheet(); break;
     case 'settheme': S.theme = ref; saveSettings(); applyTheme(); renderAll(); themeSheet(); break;
     case 'tsize': S.tsize = +ref; saveSettings(); applyTheme(); renderAll(); menuSheet(); break;
@@ -947,6 +993,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('input', e => {
   const id = e.target.id;
   if (id === 'search') { F.query = e.target.value; renderFilters(); renderBoard(); }
+  else if (id === 'binSearch') { UI.binQuery = e.target.value; renderBin(); }
   else if (id === 'edTitle') grow(e.target);
   else if (id === 'edNotes') { grow(e.target); UI.notesDirty = true; clearTimeout(UI.notesTimer); UI.notesTimer = setTimeout(saveNotes, 1500); }
   else if (id === 'edMsg' || id === 'edBoardMsg') grow(e.target);

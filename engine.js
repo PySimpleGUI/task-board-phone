@@ -10,6 +10,14 @@ export const TYPES = ['board', 'page', 'section', 'item', 'check', 'comment'];
 export const CONTENT_FIELDS = ['title', 'notes', 'shop', 'name', 'text', 'people'];
 export const CLAUDE_DEVICE = 'claude_chat';
 export const APP = 'Task Board';
+export const DONE_MODES = ['hide', 'show', 'only'];             // the Done chip, = DONE_MODES in task_board.pyw 1.3.0: hide -> show -> only done -> hide
+export const DONE_LABELS = { hide: 'Done: hide', show: 'Done: show', only: 'Only done' };
+
+// Python's str() and ' '.join(s.split()) for the few places the Bin needs them (a field value can be null or a bool)
+const pyStr = v => v === null || v === undefined ? 'None' : v === true ? 'True' : v === false ? 'False' : String(v);
+const squash = s => s.split(/\s+/).filter(Boolean).join(' ');
+const cut = (s, n) => Array.from(s).slice(0, n).join('');      // s[:n] by characters, not UTF-16 halves
+const clen = s => Array.from(s).length;
 
 // ---------- the look (the same values as the desktop) ----------
 export const THEMES = {
@@ -241,11 +249,15 @@ export class Board {
     this.seen = {}; this.seenAll = 0; this.unread = new Set();
     this.undoStack = [];
     this.onChange = null;                                       // called after every change made here
+    this.rebuilds = 0;                                          // rebuild() count - the Bin's list is worked out once per rebuild
+    this.binEmptied = 0; this.binShow = false;                  // = G.bin_emptied / G.bin_show (the phone has no Empty the bin: 0 = all shown)
+    this.binCache = null; this.replCache = null;
     this.rebuild();
   }
 
   // --- merged view (task_board.pyw rebuild()) ---
   rebuild() {
+    this.rebuilds++;
     const ents = {};
     for (const st of this.stores) {
       for (const [eid, f] of st.ents) {
@@ -386,9 +398,9 @@ export class Board {
     for (const ch of this.children(cid)) b.put(ch, { deleted: true });
     return b.done();
   }
-  deleteMessage(mid) {
+  deleteMessage(mid) {                                          // = delete_message (1.2.0): its words stay in the file, hidden, so the Bin can bring it back
     const c = this.ents[mid];
-    if (c && c.author === this.me && !c.deleted) return this.edit(mid, 'Deleted message', { deleted: true, text: '' });
+    if (c && c.author === this.me && !c.deleted) return this.edit(mid, 'Deleted message', { deleted: true });
     return null;
   }
   sendMessage(target, text) {
@@ -574,17 +586,13 @@ export class Board {
     }
     return true;
   }
-  doneToday(it) {
-    const t = parseFloat(it.done_at) || 0;
-    if (!t) return false;
-    const d = new Date(t * 1000);
-    return iso(d) === iso(today());
-  }
-  shownItems(secId, F) {                                        // open cards in order, then the done ones (today's, or all with Show done)
-    const open = [], done = [];
+  shownItems(secId, F) {                                        // = shown_items (1.3.0): the open cards in order, then the done ones - by the Done chip
+    const open = [], done = [];                                 // F.done: 'hide' (none, not even today's), 'show', 'only' done.  A search finds done cards too
+    const mode = DONE_MODES.includes(F.done) ? F.done : 'hide';
     for (const it of this.items[secId] || []) {
       if (!this.itemMatches(it, F)) continue;
-      if (it.done) { if (F.showDone || this.doneToday(it) || (F.query || '').trim()) done.push(it); } else open.push(it);
+      if (it.done) { if (mode !== 'hide' || (F.query || '').trim()) done.push(it); }
+      else if (mode !== 'only') open.push(it);
     }
     return open.concat(done);
   }
@@ -623,17 +631,154 @@ export class Board {
     }
     return Object.values(found).sort((a, b) => b[0] - a[0]);
   }
-  bringBack(rows) {
-    if (!rows.length) return null;
-    const b = this.batch(rows.length === 1 ? 'Brought back card' : `Brought back ${rows.length} cards`);
-    for (const [, , cid, st] of rows) {
-      const kids = this.goneWith(st, cid);
-      b.put(cid, { deleted: false }, st);
-      for (const eid of kids) b.put(eid, { deleted: false }, st);
-      const sec = this.ents[(st.ents.get(cid).section || [''])[0]];
-      if (sec && sec.deleted && sec.type === 'section' && String(sec.name || '').trim()) { b.put(sec.id, { deleted: false }, sec._st); sec.deleted = false; }
+  withText(st, kids) {                                          // = with_text: '   (8 steps, 1 message)' for what came or goes with a card
+    const n = kids.filter(eid => ((st.ents.get(eid) || {}).type || [''])[0] === 'check').length;
+    const m = kids.length - n;
+    const parts = [...(n ? [`${n} step${n !== 1 ? 's' : ''}`] : []), ...(m ? [`${m} message${m !== 1 ? 's' : ''}`] : [])];
+    return parts.length ? `   (${parts.join(', ')})` : '';
+  }
+
+  // --- the Bin (task_board.pyw 1.2.0, line for line: who_did, text_of_record, deleted_copy, went_with_section, place_of, replacements, bin_rows,
+  //     restore).  It replaces 1.0.x's "Bring back a deleted card" ---
+  whoDid(device, you = 'you') {                                 // 'you' / 'Deb' / 'Claude' for the device that made a change
+    if (device === CLAUDE_DEVICE) return 'Claude';
+    const u = userOf(device);
+    return u === this.me ? you : this.person(u)[1];
+  }
+  static textOfRecord(f) {                                      // a record's words (raw fields): a card's title, a section's or page's name, a step's or message's text
+    for (const key of ['title', 'name', 'text']) {
+      const v = pyStr((f[key] || [''])[0]);
+      if (v.trim()) return squash(v);
     }
-    return b.done();
+    return '';
+  }
+  deletedCopy(eid) {                                            // [store, raw fields] of a record's newest deleted copy that still has its words - null if
+    const e = this.ents[eid];                                   // it's live in any folder, or has no words left
+    if (!e || !e.deleted) return null;
+    let best = null;
+    for (const st of this.stores) {
+      const f = st.ents.get(eid);
+      const d = f && f.deleted;
+      if (d && d[0] === true && Board.textOfRecord(f) && (best === null || d[1] > best[1].deleted[1])) best = [st, f];
+    }
+    return best;
+  }
+  wentWithSection(st, sid) {                                    // the cards a section's delete took with it (same device, 0.1 s before to 2 s after), with titles
+    const d = (st.ents.get(sid) || {}).deleted;
+    if (!d || d[0] !== true) return [];
+    const out = [];
+    for (const [eid, f] of st.ents) {
+      if ((f.type || [''])[0] === 'item' && (f.section || [''])[0] === sid && (f.deleted || [false])[0] === true && f.deleted[2] === d[2] &&
+          d[1] - 100000 <= f.deleted[1] && f.deleted[1] <= d[1] + 2000000 && Board.textOfRecord(f)) out.push(eid);
+    }
+    return out;
+  }
+  placeOf(sid) {                                                // 'BUY  ›  Supplies' for a section id (a deleted section or page still has its name)
+    const s = this.ents[sid] || {};
+    const pg = this.ents[s.page] || {};
+    return [String(pg.name || '').toUpperCase(), s.name || ''].filter(Boolean).join('  ›  ') || 'the board';
+  }
+  replacements() {                                              // what a chat's steptext / shorten put in place of what: 'type|card|stamp' -> [new id, its text]
+    if (this.replCache && this.replCache[0] === this.rebuilds) return this.replCache[1];
+    const out = new Map();
+    for (const e of Object.values(this.ents)) {
+      const t = e._f.type;
+      if (t && t[2] === CLAUDE_DEVICE && ['check', 'comment'].includes(e.type) && !e.deleted)
+        out.set(`${e.type}|${e.item}|${t[1]}`, [e.id, squash(pyStr(e.text || ''))]);
+    }
+    this.replCache = [this.rebuilds, out];
+    return out;
+  }
+  binRows() {                                                   // the Bin: everything deleted that can come back, newest first.  Rows: {kind, id, st, t, dev,
+    const key = [this.rebuilds, this.binEmptied, this.binShow, this.me].join('|');   // title, where, extra, card, swap?}.  Not the blanked copy a card
+    if (this.binCache && this.binCache[0] === key) return this.binCache[1];          // leaves when it moves folder, not the steps and messages that went
+    const found = new Map();                                                         // with a deleted card (they come back with it), not other people's messages
+    for (const st of this.stores) for (const [eid, f] of st.ents) {
+      const d = f.deleted;
+      if (d && d[0] === true && !found.has(eid)) { const c = this.deletedCopy(eid); if (c) found.set(eid, c); }
+    }
+    const went = new Set();
+    for (const [eid, [st, f]] of found) if ((f.type || [''])[0] === 'item') for (const k of this.goneWith(st, eid)) went.add(k);
+    const rows = [];
+    let hidden = 0;
+    for (const [eid, [st, f]] of found) {
+      const typ = (f.type || [''])[0], d = f.deleted;
+      if (went.has(eid) || !['item', 'section', 'page', 'check', 'comment'].includes(typ)) continue;
+      if (typ === 'comment' && ![this.me, 'claude'].includes((f.author || [''])[0])) continue;   // only the writer gets their own messages back
+      if (d[1] <= this.binEmptied && !this.binShow) { hidden++; continue; }
+      const row = { kind: { item: 'card', check: 'step', comment: 'message' }[typ] || typ, id: eid, st, t: d[1], dev: d[2], title: Board.textOfRecord(f),
+        where: '', extra: '', card: null };
+      if (typ === 'item') {
+        row.where = this.placeOf((f.section || [''])[0]);
+        row.extra = this.withText(st, this.goneWith(st, eid)).trim();
+      } else if (typ === 'section') {
+        const pg = this.ents[(f.page || [''])[0]] || {};
+        row.where = String(pg.name || 'the board').toUpperCase();
+        const n = this.wentWithSection(st, eid).length;
+        row.extra = n ? `(${n} card${n !== 1 ? 's' : ''})` : '';
+      } else if (typ === 'page') {
+        row.where = 'a page of the board';
+      } else {
+        row.card = (f.item || [''])[0];
+        const card = this.ents[row.card] || {};
+        let name = squash(pyStr(card.title || 'a card'));
+        name = clen(name) <= 40 ? name : cut(name, 39).trimEnd() + '…';
+        row.where = row.card === 'board' ? 'a message to the board' :
+          `${typ === 'check' ? 'a step of' : 'on'} “${name}”` + (card.deleted ? '  (in the Bin)' : '');
+        const swap = d[2] === CLAUDE_DEVICE ? this.replacements().get(`${typ}|${row.card}|${d[1]}`) : null;
+        if (swap) {                                             // a chat shortened it: Restore swaps the long one back
+          row.swap = swap[0];
+          row.extra = `replaced by Claude with “${cut(swap[1], 40)}${clen(swap[1]) > 40 ? '…' : ''}”`;
+        } else if (typ === 'comment' && row.title.startsWith('Notes before ')) row.extra = 'the notes a chat replaced';
+      }
+      rows.push(row);
+    }
+    rows.sort((a, b) => b.t - a.t);
+    this.binCache = [key, rows, hidden];
+    return rows;
+  }
+  restore(rows) {                                               // = restore: rows back from the Bin, where they were, as ONE change (one Undo deletes them
+    if (!rows.length) return null;                              // again).  A card comes with what its delete took and its section / page if those are in
+    const b = this.batch('Restored');                           // the Bin too; a section with the cards it took; a step or a message with its card.
+    const back = new Set();                                     // Returns {batch, first: the card to open, back: the ids restored}
+    let first = null;
+    const undelete = eid => {
+      const c = this.deletedCopy(eid);
+      if (c && !back.has(eid)) { back.add(eid); b.put(eid, { deleted: false }, c[0]); }
+    };
+    const sectionBack = sid => {
+      const s = this.ents[sid];
+      if (s && s.deleted) {
+        undelete(sid);
+        const pg = this.ents[s.page];
+        if (pg && pg.deleted) undelete(pg.id);
+      }
+    };
+    const cardBack = cid => {
+      const c = this.deletedCopy(cid);
+      if (!c) return;
+      const kids = this.goneWith(c[0], cid);                    // first: once the card is back, nothing counts as gone with it
+      undelete(cid);
+      for (const eid of kids) undelete(eid);
+      sectionBack((c[1].section || [''])[0]);
+    };
+    for (const r of rows) {
+      if (r.kind === 'card') { cardBack(r.id); first = first || r.id; }
+      else if (r.kind === 'section') { for (const cid of this.wentWithSection(r.st, r.id)) cardBack(cid); sectionBack(r.id); }
+      else if (r.kind === 'page') undelete(r.id);
+      else {
+        undelete(r.id);
+        const sw = this.ents[r.swap || ''];
+        if (sw && !sw.deleted) b.put(sw.id, { deleted: true }, sw._st);   // a shortened one: the short one goes to the Bin, the long one comes back
+        if (r.card && r.card !== 'board') {
+          const card = this.ents[r.card];
+          if (card && card.deleted) cardBack(r.card);
+          first = first || r.card;
+        }
+      }
+    }
+    b.done();
+    return { batch: b, first, back };
   }
 
   cardText(it) {
